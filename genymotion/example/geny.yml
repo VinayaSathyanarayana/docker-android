@@ -6,24 +6,37 @@ version: "2.2"
 services:
   # Selenium hub
   selenium_hub:
-    image: selenium/hub:3.12.0-americium
+    image: selenium/hub:3.14.0-curium
     ports:
       - 4444:4444
 
   # Please stop this container by using docker stop instead of docker-compose stop
-  genymotion:
-    image: butomo1989/docker-android-genymotion
+  saas:
+    image: budtmo/docker-android-genymotion
     depends_on:
       - selenium_hub
-    ports:
-      - 6080:6080
-      - 4723:4723
+    privileged: true
     volumes:
       - $PWD/sample_apk:/root/tmp/sample_apk
       - $PWD/sample_devices:/root/tmp
     environment:
-      - GENY_TEMPLATE=/root/tmp/devices.json
-      - USER=xxx
-      - PASS=xxx
-      - LICENSE=xxx
+      - TYPE=SaaS
+      - TEMPLATE=/root/tmp/devices.json
+      - USER=$USER
+      - PASS=$PASS
+      - CONNECT_TO_GRID=true
+
+  # Please stop this container by using docker stop instead of docker-compose stop
+  aws:
+    image: budtmo/docker-android-genymotion
+    depends_on:
+      - selenium_hub
+    privileged: true
+    volumes:
+      - ~/.aws:/root/.aws
+      - $PWD/sample_apk:/root/tmp/sample_apk
+      - $PWD/sample_devices:/root/tmp
+    environment:
+      - TYPE=aws
+      - TEMPLATE=/root/tmp/aws.json
       - CONNECT_TO_GRID=true

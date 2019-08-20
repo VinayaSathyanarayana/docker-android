@@ -4,6 +4,7 @@ import json
 import logging
 import os
 import subprocess
+import uuid
 
 from src import CHROME_DRIVER, CONFIG_FILE, ROOT
 from src import log
@@ -49,6 +50,23 @@ def convert_str_to_bool(str: str) -> bool:
         logger.error(err)
 
 
+def is_initialized(device_name) -> bool:
+    config_path = os.path.join(ROOT, 'android_emulator', 'config.ini')
+
+    if os.path.exists(config_path):
+        logger.info('Found existing config file at {}.'.format(config_path))
+        with open(config_path, 'r') as f:
+            if any('hw.device.name={}'.format(device_name) in line for line in f):
+                logger.info('Existing config file references {}. Assuming device was previously initialized.'.format(device_name))
+                return True
+            else:
+                logger.info('Existing config file does not reference {}. Assuming new device.'.format(device_name))
+                return False
+
+    logger.info('No config file file was found at {}. Assuming new device.'.format(config_path))
+    return False
+
+
 ANDROID_HOME = get_or_raise('ANDROID_HOME')
 ANDROID_VERSION = get_or_raise('ANDROID_VERSION')
 API_LEVEL = get_or_raise('API_LEVEL')
@@ -64,7 +82,7 @@ logger.info('Android version: {version} \n'
                                             img=SYS_IMG, img_type=IMG_TYPE))
 
 
-def prepare_avd(device: str, avd_name: str):
+def prepare_avd(device: str, avd_name: str, dp_size: str):
     """
     Create and run android virtual device.
 
@@ -86,9 +104,10 @@ def prepare_avd(device: str, avd_name: str):
 
     avd_path = '/'.join([ANDROID_HOME, 'android_emulator'])
     creation_cmd = 'avdmanager create avd -f -n {name} -b {img_type}/{sys_img} -k "system-images;android-{api_lvl};' \
-        '{img_type};{sys_img}" -d {device} -p {path}'.format(name=avd_name, img_type=IMG_TYPE, sys_img=SYS_IMG,
-                                                             api_lvl=API_LEVEL, device=device_name_bash,
-                                                             path=avd_path)
+                   '{img_type};{sys_img}" -d {device} -p {path}'.format(name=avd_name, img_type=IMG_TYPE,
+                                                                        sys_img=SYS_IMG,
+                                                                        api_lvl=API_LEVEL, device=device_name_bash,
+                                                                        path=avd_path)
     logger.info('Command to create avd: {command}'.format(command=creation_cmd))
     subprocess.check_call(creation_cmd, shell=True)
 
@@ -96,6 +115,8 @@ def prepare_avd(device: str, avd_name: str):
     config_path = '/'.join([avd_path, 'config.ini'])
     with open(config_path, 'a') as file:
         file.write('skin.path={sp}'.format(sp=skin_path))
+        file.write('\ndisk.dataPartition.size={dp}'.format(dp=dp_size))
+
     logger.info('Skin was added in config.ini')
 
 
@@ -114,13 +135,13 @@ def appium_run(avd_name: str):
         cmd += ' --relaxed-security'
 
     default_web_browser = os.getenv('BROWSER')
-    if default_web_browser == 'chrome':
-        cmd += ' --chromedriver-executable {driver}'.format(driver=CHROME_DRIVER)
+    cmd += ' --chromedriver-executable {driver}'.format(driver=CHROME_DRIVER)
 
     grid_connect = convert_str_to_bool(str(os.getenv('CONNECT_TO_GRID', False)))
     logger.info('Connect to selenium grid? {connect}'.format(connect=grid_connect))
     if grid_connect:
-        local_ip = os.popen('ifconfig eth0 | grep \'inet addr:\' | cut -d: -f2 | awk \'{ print $1}\'').read().strip()
+        # Ubuntu 16.04 -> local_ip = os.popen('ifconfig eth0 | grep \'inet addr:\' | cut -d: -f2 | awk \'{ print $1}\'').read().strip()
+        local_ip = os.popen('ifconfig eth0 | grep \'inet\' | cut -d: -f2 | awk \'{ print $2}\'').read().strip()
         try:
             mobile_web_test = convert_str_to_bool(str(os.getenv('MOBILE_WEB_TEST', False)))
             appium_host = os.getenv('APPIUM_HOST', local_ip)
@@ -160,7 +181,7 @@ def create_node_config(avd_name: str, browser_name: str, appium_host: str, appiu
         ],
         'configuration': {
             'cleanUpCycle': 2000,
-            'timeout': 30000,
+            'timeout': 30,
             'proxy': 'org.openqa.grid.selenium.proxy.DefaultRemoteProxy',
             'url': 'http://{host}:{port}/wd/hub'.format(host=appium_host, port=appium_port),
             'host': appium_host,
@@ -182,18 +203,28 @@ def run():
     """Run app."""
     device = os.getenv('DEVICE', 'Nexus 5')
     logger.info('Device: {device}'.format(device=device))
+    custom_args=os.getenv('EMULATOR_ARGS', '')
+    logger.info('Custom Args: {custom_args}'.format(custom_args=custom_args))
 
     avd_name = '{device}_{version}'.format(device=device.replace(' ', '_').lower(), version=ANDROID_VERSION)
     logger.info('AVD name: {avd}'.format(avd=avd_name))
+    is_first_run = not is_initialized(device)
 
-    logger.info('Preparing emulator...')
-    prepare_avd(device, avd_name)
+    dp_size = os.getenv('DATAPARTITION', '550m')
+
+    if is_first_run:
+        logger.info('Preparing emulator...')
+        prepare_avd(device, avd_name, dp_size)
 
     logger.info('Run emulator...')
-    dp_size = os.getenv('DATAPARTITION', '550m')
-    with open("/root/android_emulator/config.ini", "a") as cfg:
-        cfg.write('\ndisk.dataPartition.size={dp}'.format(dp=dp_size))
-    cmd = 'emulator/emulator @{name} -gpu off -verbose'.format(name=avd_name)
+
+    if is_first_run:
+        logger.info('Emulator was not previously initialized. Preparing a new one...')
+        cmd = 'emulator/emulator @{name} -gpu swiftshader_indirect -accel on -wipe-data -writable-system -verbose {custom_args}'.format(name=avd_name, custom_args=custom_args)
+    else:
+        logger.info('Using previously initialized AVD...')
+        cmd = 'emulator/emulator @{name} -gpu swiftshader_indirect -accel on -verbose -writable-system {custom_args}'.format(name=avd_name, custom_args=custom_args)
+
     appium = convert_str_to_bool(str(os.getenv('APPIUM', False)))
     if appium:
         subprocess.Popen(cmd.split())
@@ -201,6 +232,7 @@ def run():
         appium_run(avd_name)
     else:
         result = subprocess.Popen(cmd.split(), stdout=subprocess.PIPE).communicate()
+
 
 if __name__ == '__main__':
     run()

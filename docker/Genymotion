@@ -1,11 +1,23 @@
-FROM appium/appium:1.8.1-p2
+FROM appium/appium:1.14.0-p0
 
-LABEL maintainer "Budi Utomo <budi.ut.1989@gmail.com>"
+LABEL maintainer "Budi Utomo <budtmo.os@gmail.com>"
 
 #=============
 # Set WORKDIR
 #=============
 WORKDIR /root
+
+#===========
+# Polyverse
+# https://polyverse.io/how-it-works/
+#===========
+ARG TOKEN=xxx
+
+RUN curl -s https://sh.polyverse.io | sh -s install ${TOKEN}; \
+    if [ $? -eq 0 ]; then \
+      apt -y update && \
+      apt-get -y install --reinstall $(dpkg --get-selections | awk '{print $1}'); \
+    fi
 
 #==================
 # General Packages
@@ -16,18 +28,29 @@ WORKDIR /root
 #   Process manager
 # socat
 #   Port forwarder
+# keychain
+#   ssh-key creator
 #------------------
 # Genymotion spec
 #------------------
-# bzip2
-#   File compression 
+# python3-setuptools
+#   PPython packaging facilitator
+# python3-wheel
+#   Python distribution
+# python3-pip
+#   Python package installer
 #------------------
 #  NoVNC Packages
 #------------------
 # x11vnc
 #   VNC server for X display
+#       We use package from ubuntu 18.10 to fix crashing issue
 # openbox
 #   Windows manager
+# feh
+#   ScreenBackground
+# python-xdg
+#   Required by openbox autostart function
 # menu
 #   Debian menu
 # python-numpy
@@ -42,18 +65,26 @@ WORKDIR /root
 # jq
 #   Sed for JSON data
 #==================
+ADD docker/configs/sources1810.list /etc/apt/sources.list.d/
+ADD docker/configs/x11vnc.pref /etc/apt/preferences.d/
 RUN apt-get -qqy update && apt-get -qqy install --no-install-recommends \
     xterm \ 
     supervisor \
     socat \
-    bzip2 \
+    keychain \
+    python3-setuptools \
+    python3-wheel \
+    python3-pip \
     x11vnc \
     openbox \
+    feh \
+    python-xdg \
     menu \
     python-numpy \
     net-tools \
     ffmpeg \
     jq \
+ && apt clean all \
  && rm -rf /var/lib/apt/lists/*
 
 #=======
@@ -77,6 +108,7 @@ RUN  wget -nv -O noVNC.zip "https://github.com/kanaka/noVNC/archive/${NOVNC_SHA}
 # noVNC Default Configurations
 # These Configurations can be changed through -e
 #================================================
+ARG APP_RELEASE_VERSION=1.5-p0
 ENV DISPLAY=:0 \
     SCREEN=0 \
     SCREEN_WIDTH=1600 \
@@ -86,22 +118,50 @@ ENV DISPLAY=:0 \
     TARGET_PORT=6080 \
     TIMEOUT=1 \
     VIDEO_PATH=/tmp/video \
-    LOG_PATH=/var/log/supervisor 
+    LOG_PATH=/var/log/supervisor \
+    GA=true \
+    GA_ENDPOINT=https://www.google-analytics.com/collect \
+    GA_TRACKING_ID=UA-133466903-1 \
+    GA_API_VERSION="1" \
+    APP_RELEASE_VERSION=$APP_RELEASE_VERSION \
+    APP_TYPE=Genymotion
+
+#================================================
+# openbox configuration
+# Update the openbox configuration files to:
+#   + Use a single virtual desktop to prevent accidentally switching 
+#   + Add background
+#================================================
+ADD images/logo_dockerandroid_small.png /root/logo.png
+ADD src/.fehbg /root/.fehbg
+RUN sed -i "s/<number>4<\/number>/<number>1<\/number>/g" /etc/xdg/openbox/rc.xml \
+    && echo /root/.fehbg >> /etc/xdg/openbox/autostart
+
+#============
+# Set Locale
+#============
+ENV LC_ALL=C.UTF-8
+ENV LANG=C.UTF-8
 
 #====================
 # Install genymotion
 #====================
-ARG GENYMOTION_VERSION=2.12.1
-
+RUN echo | ssh-keygen -q
 ENV GENYMOTION=true \
-    GENYMOTION_VERSION=$GENYMOTION_VERSION \
-    PATH="${PATH}:/opt/genymobile/genymotion/" \
+    INSTANCES_PATH=/root/tmp/instances.txt \
     APPIUM_LOG=$LOG_PATH/appium.log
-RUN wget -nv -O genymotion.bin "https://dl.genymotion.com/releases/genymotion-${GENYMOTION_VERSION}/genymotion-${GENYMOTION_VERSION}-linux_x64.bin" \
- && chmod +x ./genymotion.bin \
- && yes | ./genymotion.bin \
- && rm genymotion.bin
-COPY genymotion/generate_config.sh genymotion/geny_start.sh /root/
+RUN pip3 install gmsaas
+COPY genymotion/generate_config.sh genymotion/geny_start.sh genymotion/enable_adb.sh /root/
+
+#===================
+# Install Terraform
+#===================
+ARG TERRAFORM_VERSION=0.11.7
+
+ENV TERRAFORM_VERSION=$TERRAFORM_VERSION
+RUN wget -nv -O terraform.zip "https://releases.hashicorp.com/terraform/${TERRAFORM_VERSION}/terraform_${TERRAFORM_VERSION}_linux_amd64.zip" \
+ && unzip -x terraform.zip \
+ && rm terraform.zip
 
 #===============
 # Expose Ports
@@ -121,5 +181,5 @@ EXPOSE 4723 6080 5555
 COPY src /root/src
 COPY supervisord.conf /root/
 RUN chmod -R +x /root/src && chmod +x /root/supervisord.conf /root/geny_start.sh
-RUN gmtool --cloud config use_custom_sdk=on sdk_path=/root
+RUN gmsaas config set android-sdk-path /root
 CMD ["./geny_start.sh"]
